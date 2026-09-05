@@ -1,0 +1,202 @@
+// Dental Clinic Management System — data model
+// Money rule: LedgerEntry is APPEND-ONLY. Balance is always computed
+// as sum(charges) - sum(payments + discounts). Never stored, never edited.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  DENTIST
+  STAFF
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  ARRIVED
+  IN_CHAIR
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum LedgerType {
+  CHARGE
+  PAYMENT
+  DISCOUNT
+}
+
+enum PaymentMethod {
+  CASH
+  GCASH
+  BANK_TRANSFER
+  CARD
+  HMO
+  OTHER
+}
+
+enum PlanStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role     @default(STAFF)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  auditLogs     AuditLog[]
+  ledgerEntries LedgerEntry[]
+  visits        Visit[]
+
+  @@map("users")
+}
+
+model Patient {
+  id              String    @id @default(uuid())
+  firstName       String
+  lastName        String
+  middleName      String?
+  birthDate       DateTime? @db.Date
+  sex             String?
+  phone           String?
+  email           String?
+  address         String?
+  guardianName    String?   // for minors
+  guardianPhone   String?
+  allergies       String?   // free text; shown as a red alert everywhere
+  medicalNotes    String?
+  consentSignedAt DateTime? // RA 10173: captured at registration
+  archived        Boolean   @default(false) // soft delete only
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  visits         Visit[]
+  ledgerEntries  LedgerEntry[]
+  treatmentPlans TreatmentPlan[]
+  appointments   Appointment[]
+
+  @@index([lastName, firstName])
+  @@map("patients")
+}
+
+model Procedure {
+  id           String  @id @default(uuid())
+  name         String
+  category     String?
+  defaultPrice Decimal @db.Decimal(10, 2)
+  active       Boolean @default(true)
+
+  visitProcedures VisitProcedure[]
+
+  @@map("procedures")
+}
+
+model Visit {
+  id            String    @id @default(uuid())
+  patientId     String
+  dentistId     String?
+  visitDate     DateTime  @db.Date
+  notes         String?
+  nextVisitDate DateTime? @db.Date
+  createdAt     DateTime  @default(now())
+
+  patient    Patient          @relation(fields: [patientId], references: [id])
+  dentist    User?            @relation(fields: [dentistId], references: [id])
+  procedures VisitProcedure[]
+
+  @@index([patientId, visitDate])
+  @@map("visits")
+}
+
+model VisitProcedure {
+  id           String  @id @default(uuid())
+  visitId      String
+  procedureId  String
+  toothNumber  String? // FDI notation, optional
+  priceCharged Decimal @db.Decimal(10, 2) // snapshot, not catalog reference
+
+  visit     Visit     @relation(fields: [visitId], references: [id], onDelete: Cascade)
+  procedure Procedure @relation(fields: [procedureId], references: [id])
+
+  @@map("visit_procedures")
+}
+
+model TreatmentPlan {
+  id          String     @id @default(uuid())
+  patientId   String
+  name        String     // e.g. "Metal Braces Package"
+  totalPrice  Decimal    @db.Decimal(10, 2)
+  downpayment Decimal?   @db.Decimal(10, 2)
+  monthlyDue  Decimal?   @db.Decimal(10, 2)
+  startDate   DateTime?  @db.Date
+  status      PlanStatus @default(ACTIVE)
+  notes       String?
+  createdAt   DateTime   @default(now())
+
+  patient       Patient       @relation(fields: [patientId], references: [id])
+  ledgerEntries LedgerEntry[]
+
+  @@map("treatment_plans")
+}
+
+model LedgerEntry {
+  id        String         @id @default(uuid())
+  patientId String
+  type      LedgerType
+  amount    Decimal        @db.Decimal(10, 2)
+  method    PaymentMethod?
+  note      String?
+  planId    String?
+  createdBy String?
+  createdAt DateTime       @default(now())
+
+  patient Patient        @relation(fields: [patientId], references: [id])
+  plan    TreatmentPlan? @relation(fields: [planId], references: [id])
+  author  User?          @relation(fields: [createdBy], references: [id])
+
+  @@index([patientId, createdAt])
+  @@map("ledger_entries")
+}
+
+model Appointment {
+  id          String            @id @default(uuid())
+  patientId   String?
+  patientName String // denormalized so walk-ins without a record can be booked
+  startsAt    DateTime
+  endsAt      DateTime
+  status      AppointmentStatus @default(SCHEDULED)
+  note        String?
+  createdAt   DateTime          @default(now())
+
+  patient Patient? @relation(fields: [patientId], references: [id])
+
+  @@index([startsAt])
+  @@map("appointments")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  action    String // CREATE | UPDATE | ARCHIVE | LOGIN
+  entity    String // "patient", "ledger_entry", ...
+  entityId  String?
+  detail    Json?
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([entity, entityId])
+  @@map("audit_logs")
+}
