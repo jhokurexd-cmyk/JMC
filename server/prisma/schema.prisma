@@ -19,8 +19,9 @@ enum Role {
 
 enum AppointmentStatus {
   SCHEDULED
-  ARRIVED
-  IN_CHAIR
+  CONFIRMED
+  ARRIVED // legacy — kept so old rows still render; not offered in the picker
+  IN_CHAIR // legacy
   COMPLETED
   CANCELLED
   NO_SHOW
@@ -45,6 +46,12 @@ enum PlanStatus {
   ACTIVE
   COMPLETED
   CANCELLED
+  PAID
+}
+
+enum PlanPaymentType {
+  CASH
+  INSTALLMENT
 }
 
 model User {
@@ -56,9 +63,10 @@ model User {
   active       Boolean  @default(true)
   createdAt    DateTime @default(now())
 
-  auditLogs     AuditLog[]
-  ledgerEntries LedgerEntry[]
-  visits        Visit[]
+  auditLogs      AuditLog[]
+  ledgerEntries  LedgerEntry[]
+  visits         Visit[]
+  freebieEntries PlanFreebieEntry[]
 
   @@map("users")
 }
@@ -77,6 +85,7 @@ model Patient {
   guardianPhone   String?
   allergies       String?   // free text; shown as a red alert everywhere
   medicalNotes    String?
+  socialMedia     Json?     // [{ platform, handle }]
   consentSignedAt DateTime? // RA 10173: captured at registration
   archived        Boolean   @default(false) // soft delete only
   createdAt       DateTime  @default(now())
@@ -86,87 +95,233 @@ model Patient {
   ledgerEntries  LedgerEntry[]
   treatmentPlans TreatmentPlan[]
   appointments   Appointment[]
+  files          PatientFile[]
 
   @@index([lastName, firstName])
   @@map("patients")
 }
 
+// Uploaded patient documents — currently X-ray images (kind = "XRAY").
+// The binary lives on disk under server/uploads/; this row is the metadata.
+model PatientFile {
+  id           String    @id @default(uuid())
+  patientId    String
+  kind         String    @default("XRAY")
+  label        String?
+  xrayType     String? // Panoramic | Periapical | Bitewing | Cephalometric | CBCT | Intraoral photo | Other
+  description  String?
+  notes        String?
+  takenAt      DateTime? @db.Date // date the image was taken (vs uploaded)
+  filename     String // stored name on disk
+  originalName String
+  mimeType     String
+  size         Int
+  uploadedBy   String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  patient Patient @relation(fields: [patientId], references: [id])
+
+  @@index([patientId, createdAt])
+  @@map("patient_files")
+}
+
 model Procedure {
-  id           String  @id @default(uuid())
-  name         String
-  category     String?
-  defaultPrice Decimal @db.Decimal(10, 2)
-  active       Boolean @default(true)
+  id            String  @id @default(uuid())
+  name          String
+  category      String?
+  defaultPrice  Decimal @db.Decimal(10, 2)
+  allowQuantity Boolean @default(false) // "Allow Quantity / Multiple Items" — per-item variable pricing on a visit
+  active        Boolean @default(true)
 
   visitProcedures VisitProcedure[]
+  packageLinks    PackageProcedure[]
+  freebies        PlanFreebie[]
 
   @@map("procedures")
+}
+
+// Reusable package definitions (OWNER/DENTIST catalog, soft-deleted like
+// procedures). Applying one to a patient copies its values into a TreatmentPlan.
+model PackageTemplate {
+  id           String          @id @default(uuid())
+  name         String
+  paymentType  PlanPaymentType @default(INSTALLMENT)
+  defaultPrice Decimal         @db.Decimal(10, 2)
+  downpayment  Decimal?        @db.Decimal(10, 2)
+  monthlyDue   Decimal?        @db.Decimal(10, 2)
+  freebies     Json?           // [{ item, note?, given? }]
+  notes        String?
+  active       Boolean         @default(true)
+  createdAt    DateTime        @default(now())
+
+  procedures PackageProcedure[]
+  plans      TreatmentPlan[]
+
+  @@map("package_templates")
+}
+
+model PackageProcedure {
+  id          String @id @default(uuid())
+  templateId  String
+  procedureId String
+
+  template  PackageTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  procedure Procedure       @relation(fields: [procedureId], references: [id])
+
+  @@unique([templateId, procedureId])
+  @@map("package_procedures")
 }
 
 model Visit {
   id            String    @id @default(uuid())
   patientId     String
   dentistId     String?
+  appointmentId String?   // the appointment this visit fulfilled, if any
   visitDate     DateTime  @db.Date
   notes         String?
   nextVisitDate DateTime? @db.Date
   createdAt     DateTime  @default(now())
 
-  patient    Patient          @relation(fields: [patientId], references: [id])
-  dentist    User?            @relation(fields: [dentistId], references: [id])
-  procedures VisitProcedure[]
+  patient     Patient          @relation(fields: [patientId], references: [id])
+  dentist     User?            @relation(fields: [dentistId], references: [id])
+  appointment Appointment?     @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  procedures  VisitProcedure[]
 
   @@index([patientId, visitDate])
   @@map("visits")
 }
 
 model VisitProcedure {
-  id           String  @id @default(uuid())
-  visitId      String
-  procedureId  String
-  toothNumber  String? // FDI notation, optional
-  priceCharged Decimal @db.Decimal(10, 2) // snapshot, not catalog reference
+  id                 String  @id @default(uuid())
+  visitId            String
+  procedureId        String
+  toothNumber        String? // FDI notation, optional
+  priceCharged       Decimal @db.Decimal(10, 2) // billable total for this line = Σ prices of items where covered == false
+  quantity           Int     @default(1)
+  items              Json?   // [{ price: number, covered: boolean }] length == quantity; null ⇒ legacy single item
+  coveredByPlanId    String? // staff-marked: Monthly Braces Adjustment charged to the package (mutually exclusive with coveredByFreebieId)
+  coveredByFreebieId String? // a package benefit (e.g. Free Fillings) whose free items this line consumed
+  performedBy        String? // free-text name of the dentist who actually did this procedure
 
-  visit     Visit     @relation(fields: [visitId], references: [id], onDelete: Cascade)
-  procedure Procedure @relation(fields: [procedureId], references: [id])
+  visit         Visit          @relation(fields: [visitId], references: [id], onDelete: Cascade)
+  procedure     Procedure      @relation(fields: [procedureId], references: [id])
+  coveredByPlan TreatmentPlan? @relation(fields: [coveredByPlanId], references: [id], onDelete: SetNull)
+  coveredByFreebie PlanFreebie? @relation(fields: [coveredByFreebieId], references: [id], onDelete: SetNull)
+  ledgerEntries LedgerEntry[]
 
   @@map("visit_procedures")
 }
 
 model TreatmentPlan {
-  id          String     @id @default(uuid())
-  patientId   String
-  name        String     // e.g. "Metal Braces Package"
-  totalPrice  Decimal    @db.Decimal(10, 2)
-  downpayment Decimal?   @db.Decimal(10, 2)
-  monthlyDue  Decimal?   @db.Decimal(10, 2)
-  startDate   DateTime?  @db.Date
-  status      PlanStatus @default(ACTIVE)
-  notes       String?
-  createdAt   DateTime   @default(now())
+  id                 String          @id @default(uuid())
+  patientId          String
+  templateId         String? // the PackageTemplate this was started from, if any
+  name               String          // e.g. "Metal Braces Package"
+  paymentType        PlanPaymentType @default(CASH)
+  freebies           Json?           // [{ item, note?, given? }] — promo inclusions
+  includedProcedures Json?           // [{ procedureId?, name }] — covered, not billed separately
+  totalPrice         Decimal         @db.Decimal(10, 2)
+  downpayment        Decimal?        @db.Decimal(10, 2)
+  monthlyDue         Decimal?        @db.Decimal(10, 2)
+  startDate          DateTime?       @db.Date
+  status             PlanStatus      @default(ACTIVE)
+  notes              String?
+  createdAt          DateTime        @default(now())
 
-  patient       Patient       @relation(fields: [patientId], references: [id])
-  ledgerEntries LedgerEntry[]
+  patient          Patient          @relation(fields: [patientId], references: [id])
+  template         PackageTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  ledgerEntries    LedgerEntry[]
+  coveredProcedures VisitProcedure[]
+  planFreebies     PlanFreebie[]
 
   @@map("treatment_plans")
 }
 
-model LedgerEntry {
-  id        String         @id @default(uuid())
-  patientId String
-  type      LedgerType
-  amount    Decimal        @db.Decimal(10, 2)
-  method    PaymentMethod?
-  note      String?
-  planId    String?
-  createdBy String?
-  createdAt DateTime       @default(now())
+// A package benefit configured on ONE patient's plan (a snapshot from the
+// template, editable per patient). Non-monetary: it never touches the plan's
+// paid/remaining balance. `procedureId` links it to a catalog procedure so a
+// visit line for that procedure can consume it; null ⇒ a one-off benefit
+// (Ortho Kit, Retainer) tracked as claimed / not.
+model PlanFreebie {
+  id          String   @id @default(uuid())
+  planId      String
+  name        String
+  procedureId String?
+  qtyIncluded Int      @default(1)
+  notes       String?
+  createdAt   DateTime @default(now())
 
-  patient Patient        @relation(fields: [patientId], references: [id])
-  plan    TreatmentPlan? @relation(fields: [planId], references: [id])
-  author  User?          @relation(fields: [createdBy], references: [id])
+  plan            TreatmentPlan      @relation(fields: [planId], references: [id], onDelete: Cascade)
+  procedure       Procedure?         @relation(fields: [procedureId], references: [id])
+  entries         PlanFreebieEntry[]
+  visitProcedures VisitProcedure[]
+
+  @@index([planId])
+  @@map("plan_freebies")
+}
+
+enum FreebieEntryType {
+  USE
+  VOID
+  RESTORE
+}
+
+// Append-only log of freebie activity — mirrors the ledger reversal pattern.
+// used = Σ USE.qty; voided = Σ VOID.qty − Σ RESTORE.qty; remaining is derived,
+// never stored, never below zero. USE is permanent (visits aren't editable);
+// RESTORE only ever reverses a VOID.
+model PlanFreebieEntry {
+  id               String           @id @default(uuid())
+  freebieId        String
+  type             FreebieEntryType
+  qty              Int
+  reason           String?
+  visitProcedureId String? // USE: the visit line that consumed it
+  reversalOfId     String? // RESTORE: the VOID entry it undoes
+  createdBy        String?
+  createdAt        DateTime         @default(now())
+
+  freebie    PlanFreebie        @relation(fields: [freebieId], references: [id], onDelete: Cascade)
+  author     User?              @relation(fields: [createdBy], references: [id])
+  reversalOf PlanFreebieEntry?  @relation("FreebieReversal", fields: [reversalOfId], references: [id])
+  reversedBy PlanFreebieEntry[] @relation("FreebieReversal")
+
+  @@index([freebieId])
+  @@map("plan_freebie_entries")
+}
+
+model LedgerEntry {
+  id          String         @id @default(uuid())
+  patientId   String
+  type        LedgerType
+  amount      Decimal        @db.Decimal(10, 2)
+  method      PaymentMethod?
+  note        String?
+  planId      String?
+  appliesToId String? // a PAYMENT/DISCOUNT can pay down one specific CHARGE
+  reversalOfId String? // set on a reversal entry that voids a prior PAYMENT/DISCOUNT
+  reversalKind String? // 'VOID' | 'REFUND' — on reversal rows only
+  refundMethod PaymentMethod? // how a refund's money was returned (reversal rows, kind REFUND)
+  receiptNo   String?        @unique // 'OR-000001' — set only on real (non-reversal) PAYMENT rows
+  balanceBefore Decimal?     @db.Decimal(10, 2) // Total Due snapshot just before this PAYMENT / reversal
+  balanceAfter  Decimal?     @db.Decimal(10, 2) // Total Due snapshot just after
+  visitProcedureId String? // the visit line this CHARGE came from (for the qty/price breakdown)
+  createdBy   String?
+  createdAt   DateTime       @default(now())
+
+  patient     Patient        @relation(fields: [patientId], references: [id])
+  plan        TreatmentPlan? @relation(fields: [planId], references: [id])
+  author      User?          @relation(fields: [createdBy], references: [id])
+  appliesTo   LedgerEntry?   @relation("ChargeAllocations", fields: [appliesToId], references: [id])
+  allocations LedgerEntry[]  @relation("ChargeAllocations")
+  reversalOf  LedgerEntry?   @relation("LedgerReversal", fields: [reversalOfId], references: [id], onDelete: SetNull)
+  reversedBy  LedgerEntry[]  @relation("LedgerReversal")
+  visitProcedure VisitProcedure? @relation(fields: [visitProcedureId], references: [id], onDelete: SetNull)
 
   @@index([patientId, createdAt])
+  @@index([appliesToId])
+  @@index([reversalOfId])
   @@map("ledger_entries")
 }
 
@@ -174,13 +329,16 @@ model Appointment {
   id          String            @id @default(uuid())
   patientId   String?
   patientName String // denormalized so walk-ins without a record can be booked
+  dentist     String? // free-text name of the dentist this slot is for
   startsAt    DateTime
   endsAt      DateTime
   status      AppointmentStatus @default(SCHEDULED)
   note        String?
+  archived    Boolean           @default(false) // "delete" = archive, so history stays
   createdAt   DateTime          @default(now())
 
   patient Patient? @relation(fields: [patientId], references: [id])
+  visits  Visit[]
 
   @@index([startsAt])
   @@map("appointments")
@@ -198,5 +356,14 @@ model AuditLog {
   user User? @relation(fields: [userId], references: [id])
 
   @@index([entity, entityId])
+  @@index([createdAt])
   @@map("audit_logs")
+}
+
+// Named integer sequences. Only use: `receipt` — the OR-000001 payment counter.
+model Counter {
+  key   String @id
+  value Int    @default(0)
+
+  @@map("counters")
 }

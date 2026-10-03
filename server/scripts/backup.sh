@@ -18,6 +18,11 @@ mkdir -p "$BACKUP_DIR"
 echo "[$(date)] dumping database..."
 pg_dump "$DATABASE_URL" | gzip > "$FILE"
 
+# fail loudly if the archive is truncated/corrupt before we rely on it
+gzip -t "$FILE"
+test -s "$FILE"
+echo "[$(date)] dump ok ($(du -h "$FILE" | cut -f1))"
+
 echo "[$(date)] uploading to $RCLONE_REMOTE ..."
 rclone copy "$FILE" "$RCLONE_REMOTE"
 

@@ -9,3 +9,15 @@ export const fmtTime = (d) => (d ? format(new Date(d), 'h:mm a') : '—')
 
 export const fullName = (p) =>
   [p.lastName, p.firstName].filter(Boolean).join(', ') || '(no name)'
+
+export const initials = (p) =>
+  `${p.firstName?.[0] ?? ''}${p.lastName?.[0] ?? ''}`.toUpperCase() || '?'
+
+export const ageOf = (birthDate) => {
+  if (!birthDate) return null
+  const b = new Date(birthDate)
+  const now = new Date()
+  let age = now.getFullYear() - b.getFullYear()
+  if (now < new Date(now.getFullYear(), b.getMonth(), b.getDate())) age--
+  return age
+}

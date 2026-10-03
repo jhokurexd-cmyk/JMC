@@ -9,9 +9,15 @@ import patientRoutes from './routes/patients.js'
 import visitRoutes from './routes/visits.js'
 import ledgerRoutes from './routes/ledger.js'
 import planRoutes from './routes/plans.js'
+import fileRoutes from './routes/files.js'
 import procedureRoutes from './routes/procedures.js'
+import packageRoutes from './routes/packages.js'
 import appointmentRoutes from './routes/appointments.js'
 import reportRoutes from './routes/reports.js'
+import feedRoutes from './routes/feed.js'
+import performerRoutes from './routes/performers.js'
+import freebieRoutes from './routes/freebies.js'
+import auditRoutes from './routes/audit.js'
 
 const app = express()
 
@@ -22,15 +28,22 @@ app.use(cookieParser())
 app.get('/api/v1/health', (req, res) => res.json({ ok: true }))
 
 app.use('/api/v1/auth', authRoutes)
+// public, token-gated report feed for spreadsheets — bypasses the JWT wall
+app.use('/api/v1/feed', feedRoutes)
 
 // everything below requires a signed-in user
 app.use('/api/v1', requireAuth)
 app.use('/api/v1/patients/:patientId/visits', visitRoutes)
 app.use('/api/v1/patients/:patientId/ledger', ledgerRoutes)
+app.use('/api/v1/patients/:patientId/plans/:planId/freebies', freebieRoutes)
 app.use('/api/v1/patients/:patientId/plans', planRoutes)
+app.use('/api/v1/patients/:patientId/files', fileRoutes)
 app.use('/api/v1/patients', patientRoutes)
 app.use('/api/v1/procedures', procedureRoutes)
+app.use('/api/v1/packages', packageRoutes)
 app.use('/api/v1/appointments', appointmentRoutes)
+app.use('/api/v1/visit-performers', performerRoutes)
+app.use('/api/v1/audit', auditRoutes)
 app.use('/api/v1/reports', reportRoutes)
 
 app.use(errorHandler)
