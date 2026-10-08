@@ -178,7 +178,8 @@ rows when a plan is created from the template.
 
 ## Patient files (X-rays)
 
-Uploaded images live on disk under `server/uploads/` (gitignored); the
+Uploaded images live on disk under `server/uploads/` (gitignored; `UPLOAD_DIR`
+overrides the root, and on Vercel it falls back to `/tmp`); the
 `patient_files` row is the metadata (`xrayType`, `description`, `notes`,
 `takenAt`, plus `label`). Routes nested under `/api/v1/patients/:patientId/files`
 (`server/src/routes/files.js`, `multer` disk storage, 15 MB, PNG/JPEG/WebP/PDF).

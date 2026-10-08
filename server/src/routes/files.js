@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 import crypto from 'node:crypto'
 import multer from 'multer'
 import { prisma } from '../lib/prisma.js'
@@ -12,7 +13,15 @@ import { audit } from '../lib/audit.js'
 const router = Router({ mergeParams: true })
 
 // Binaries live on disk (gitignored); patient_files rows hold the metadata.
-const UPLOAD_DIR = path.join(import.meta.dirname, '..', '..', 'uploads', 'xrays')
+// UPLOAD_DIR overrides the uploads root (default: server/uploads). Vercel's code
+// directory is read-only, so the demo deploy falls back to /tmp — files there do
+// not survive between function instances.
+const UPLOAD_ROOT = process.env.UPLOAD_DIR
+  ? path.resolve(process.env.UPLOAD_DIR)
+  : process.env.VERCEL
+    ? path.join(os.tmpdir(), 'jmc-uploads')
+    : path.join(import.meta.dirname, '..', '..', 'uploads')
+const UPLOAD_DIR = path.join(UPLOAD_ROOT, 'xrays')
 fs.mkdirSync(UPLOAD_DIR, { recursive: true })
 
 const EXT = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'application/pdf': '.pdf' }

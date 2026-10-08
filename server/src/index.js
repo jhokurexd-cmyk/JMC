@@ -21,6 +21,16 @@ import auditRoutes from './routes/audit.js'
 
 const app = express()
 
+// On Vercel (demo deploy) this app runs as a function behind the `/api` route in
+// vercel.json. Put the prefix back if the platform stripped it, so the routes
+// below match either way. No effect on the clinic PC.
+if (process.env.VERCEL) {
+  app.use((req, res, next) => {
+    if (!req.url.startsWith('/api/')) req.url = '/api' + req.url
+    next()
+  })
+}
+
 app.use(cors({ origin: process.env.CLIENT_ORIGIN, credentials: true }))
 app.use(express.json())
 app.use(cookieParser())
@@ -48,5 +58,10 @@ app.use('/api/v1/reports', reportRoutes)
 
 app.use(errorHandler)
 
-const port = process.env.PORT ?? 4000
-app.listen(port, () => console.log(`API running on http://localhost:${port}`))
+// Vercel imports the app instead of running a long-lived server.
+if (!process.env.VERCEL) {
+  const port = process.env.PORT ?? 4000
+  app.listen(port, () => console.log(`API running on http://localhost:${port}`))
+}
+
+export default app
