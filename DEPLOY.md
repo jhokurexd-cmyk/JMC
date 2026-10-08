@@ -144,6 +144,32 @@ that window is unacceptable, add **point-in-time recovery**:
 
 ---
 
+## Demo / prototype deploy on Vercel (NOT for real patient data)
+
+For showing the prototype only. It runs against a separate hosted demo database
+and must **never** hold real patient records (RA 10173) — the clinic system of
+record stays on the clinic PC.
+
+`vercel.json` (repo root) deploys two services: `client` (Vite) at `/` and
+`server` (Express) at `/api`, same origin, so the login cookie works unchanged.
+On Vercel the API doesn't call `listen()` (Vercel imports the exported app), and
+X-ray uploads go to `/tmp` — they disappear between function instances, and
+Vercel caps request bodies at ~4.5 MB.
+
+1. Create a demo Postgres (e.g. Neon from the Vercel Marketplace).
+2. Vercel → Project → Settings → Environment Variables:
+   `DATABASE_URL`, `JWT_SECRET`, `JWT_REFRESH_SECRET` (two different
+   `openssl rand -base64 48` values). Leave `REPORT_TOKEN` unset.
+3. From your machine, once, against the **demo** database only:
+   ```bash
+   cd server
+   DATABASE_URL='<demo db url>' SEED_ADMIN_EMAIL='demo@…' SEED_ADMIN_PASSWORD='<strong>' \
+     sh -c 'npx prisma migrate deploy && npm run db:seed'
+   ```
+4. Redeploy. Enter only made-up demo patients.
+
+---
+
 ## Performance note
 
 `computeDue` / `dueMap` (`server/src/lib/balance.js`) — used by the patient list,
